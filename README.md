@@ -135,7 +135,7 @@ Personal-Finance-Manager/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/m-ah07/Personal-Finance-Manager.git
+git clone https://github.com/Aryan-Dangi/Personal-Finance-Manager.git
 ```
 
 ### 2. Install Backend Dependencies
