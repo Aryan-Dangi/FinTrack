@@ -1,4 +1,4 @@
-# Personal Finance Manager
+# FinTrack — Personal Finance Management Platform
 
 A comprehensive full-stack application that helps users track income, expenses, and financial goals. Built with a modern tech stack featuring a **Node.js/Express** backend, **MongoDB** database, **React** frontend, and **JWT** authentication for secured access. The application also supports **Docker** and `docker-compose` for easy containerized deployment.
 
@@ -135,12 +135,12 @@ Personal-Finance-Manager/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/Aryan-Dangi/Personal-Finance-Manager.git
+git clone https://github.com/Aryan-Dangi/FinTrack.git
 ```
 
 ### 2. Install Backend Dependencies
 ```bash
-cd Personal-Finance-Manager/backend
+cd FinTrack/backend
 npm install
 ```
 
