@@ -5,3 +5,5 @@ import tailwindcss from "@tailwindcss/vite"
 export default defineConfig({
   plugins: [react(),tailwindcss()],
 })
+
+//adding here enables the tailwinf directly therough vite
