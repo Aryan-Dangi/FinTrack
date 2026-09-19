@@ -1,8 +1,9 @@
-const Landing = ()=>{
-    return(
-        <div className="text-white text-3xl">
+const Landing = () => {
+    return (
+        <div className="bg-black text-white text-3xl">
             Landing
         </div>
     )
 }
+
 export default Landing
