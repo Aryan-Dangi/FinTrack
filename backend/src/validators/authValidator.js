@@ -1,14 +1,39 @@
-const { body } = require('express-validator');
+const { z } = require("zod");
 
-const signupValidator = [
-  body('name').trim().notEmpty().withMessage('Name is required').isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
-  body('email').trim().notEmpty().withMessage('Email is required').isEmail().withMessage('Invalid email format'),
-  body('password').notEmpty().withMessage('Password is required').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
-];
+const signupSchema = z.object({
+  fullName: z
+    .string()
+    .trim()
+    .min(3, "Full name must be at least 3 characters")
+    .max(50, "Full name cannot exceed 50 characters"),
 
-const loginValidator = [
-  body('email').trim().notEmpty().withMessage('Email is required').isEmail().withMessage('Invalid email format'),
-  body('password').notEmpty().withMessage('Password is required')
-];
+  email: z
+    .string()
+    .trim()
+    .email("Please enter a valid email address")
+    .toLowerCase(),
 
-module.exports = { signupValidator, loginValidator };
+  password: z
+    .string()
+    .min(8, "Password must contain at least 8 characters")
+    .regex(/[A-Z]/, "Password must contain one uppercase letter")
+    .regex(/[a-z]/, "Password must contain one lowercase letter")
+    .regex(/[0-9]/, "Password must contain one number"),
+});
+
+const loginSchema = z.object({
+  email: z
+    .string()
+    .trim()
+    .email("Please enter a valid email address")
+    .toLowerCase(),
+
+  password: z
+    .string()
+    .min(1, "Password is required"),
+});
+
+module.exports = {
+  signupSchema,
+  loginSchema,
+};
