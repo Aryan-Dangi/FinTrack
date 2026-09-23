@@ -1,5 +1,4 @@
 const User = require("../models/User");
-
 const signup = async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
@@ -14,22 +13,38 @@ const signup = async (req, res) => {
       });
     }
 
-    // Create user
     const user = await User.create({
-      fullName,
-      email,
-      password,
+    fullName,
+    email,
+    password,
+    });
+
+    // Generate tokens
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Save refresh token in database
+    user.refreshToken = refreshToken;
+    await user.save({ validateBeforeSave: false });
+
+    // Send refresh token as HttpOnly cookie
+    res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: false,      // true in production (HTTPS)
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
     return res.status(201).json({
-      success: true,
-      message: "Account created successfully.",
-      user: {
+    success: true,
+    message: "Account created successfully.",
+    accessToken,
+    user: {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
         currency: user.currency,
-      },
+    },
     });
   } catch (error) {
     console.error("Signup Error:", error);
@@ -45,10 +60,10 @@ const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Find user and include password
+    
     const user = await User.findOne({ email }).select("+password");
 
-    // User not found
+    
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -56,7 +71,7 @@ const login = async (req, res) => {
       });
     }
 
-    // Compare password
+    
     const isPasswordCorrect = await user.comparePassword(password);
 
     if (!isPasswordCorrect) {
@@ -65,6 +80,20 @@ const login = async (req, res) => {
         message: "Invalid email or password.",
       });
     }
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Save refresh token in MongoDB
+    user.refreshToken = refreshToken;
+    await user.save({ validateBeforeSave: false });
+
+    // Send refresh token as HttpOnly cookie
+    res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: false,      // true after deployment (HTTPS)
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
 
     return res.status(200).json({
       success: true,
