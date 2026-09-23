@@ -19,7 +19,7 @@ const DashboardLayout = () => {
 
       <div className="flex">
         {/* Desktop Sidebar */}
-        <div className="hidden lg:block">
+        <div className="hidden lg:block w-64">
           <Sidebar />
         </div>
 

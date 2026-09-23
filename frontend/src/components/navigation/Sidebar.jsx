@@ -4,7 +4,7 @@ import { navigation } from "../../constants/navigations";
 
 const Sidebar = ({ closeSidebar }) => {
   return (
-    <aside className="flex h-screen w-64 flex-col border-r border-zinc-800 bg-zinc-950 px-4 py-6">
+    <aside className="fixed left-0 top-0 flex h-screen w-64 flex-col border-r border-zinc-800 bg-zinc-950 px-4 py-6">
       {/* Logo */}
       <Logo />
 
