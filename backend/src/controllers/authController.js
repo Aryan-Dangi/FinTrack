@@ -98,6 +98,7 @@ const login = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Login successful.",
+      accessToken,
       user: {
         id: user._id,
         fullName: user.fullName,
@@ -114,6 +115,23 @@ const login = async (req, res) => {
     });
   }
 };
+
+
+const getMe = async(req,res)=>{
+  return res.status(200).json({
+    success: true,
+    user:{
+      id: req.user._id,
+      fullName: req.user.fullName,
+      email: req.user.email,
+      currency: req.user.currency,
+      monthlyBudget: req.user.monthlyBudget,
+      avatar: req.user.avatar,
+      isEmailVerified: req.user.isEmailVerified,
+      createdAt: req.user.createdAt,
+    }
+  })
+}
 module.exports = {
-  signup,login
+  signup,login,getMe
 };
