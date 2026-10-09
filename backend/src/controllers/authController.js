@@ -132,6 +132,59 @@ const getMe = async(req,res)=>{
     }
   })
 }
+
+const refreshAccessToken = async (req, res) => {
+  try {
+    const incomingRefreshToken = req.cookies.refreshToken;
+
+    if (!incomingRefreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token missing.",
+      });
+    }
+
+    // Verify refresh token
+    const decoded = jwt.verify(
+      incomingRefreshToken,
+      process.env.JWT_REFRESH_SECRET
+    );
+
+    // Find user and explicitly include refreshToken
+    const user = await User.findById(decoded.id).select("+refreshToken");
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    // Make sure the token belongs to the current session
+    if (user.refreshToken !== incomingRefreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid refresh token.",
+      });
+    }
+
+    // Generate new access token
+    const accessToken = user.generateAccessToken();
+
+    return res.status(200).json({
+      success: true,
+      accessToken,
+    });
+  } catch (error) {
+    console.error("Refresh Token Error:", error);
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired refresh token.",
+    });
+  }
+};
+
 module.exports = {
-  signup,login,getMe
+  signup,login,getMe,refreshAccessToken
 };
