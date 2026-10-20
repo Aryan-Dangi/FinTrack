@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useAuth } from "../../context/useAuth";
 import { loginUser } from "../../services/authService";
 
 const loginSchema = z.object({
@@ -17,6 +19,10 @@ const loginSchema = z.object({
 const Login = () => {
   const [serverError, setServerError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { login } = useAuth();
 
   const {
     register,
@@ -37,17 +43,24 @@ const Login = () => {
     try {
       const result = await loginUser(formData);
 
-      // Temporary: keep the access token available for the
-      // next authentication-state step.
-      // We'll centralize token management in the next step.
-      if (result.accessToken) {
-        sessionStorage.setItem("accessToken", result.accessToken);
+      if (!result.accessToken || !result.user) {
+        throw new Error("Invalid login response from server.");
       }
 
+      // Store the user and access token in shared React state.
+      login(result.user, result.accessToken);
+
       setSuccessMessage(result.message || "Login successful.");
+
+      // Return to the originally requested page, if available.
+      const destination =
+        location.state?.from?.pathname || "/dashboard";
+
+      navigate(destination, { replace: true });
     } catch (error) {
       setServerError(
         error.response?.data?.message ||
+          error.message ||
           "Unable to log in. Please try again."
       );
     }

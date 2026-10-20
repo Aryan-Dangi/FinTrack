@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/useAuth";
 import { signupUser } from "../../services/authService";
 
 const signupSchema = z.object({
@@ -10,10 +12,12 @@ const signupSchema = z.object({
     .trim()
     .min(3, "Name must be at least 3 characters")
     .max(50, "Name cannot exceed 50 characters"),
+
   email: z
     .string()
     .trim()
     .email("Enter a valid email address"),
+
   password: z
     .string()
     .min(8, "Password must contain at least 8 characters")
@@ -25,6 +29,9 @@ const signupSchema = z.object({
 const Signup = () => {
   const [serverError, setServerError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+
+  const navigate = useNavigate();
+  const { login } = useAuth();
 
   const {
     register,
@@ -45,12 +52,27 @@ const Signup = () => {
 
     try {
       const result = await signupUser(formData);
+
+      // Ensure the backend returned the expected authentication data.
+      if (!result.accessToken || !result.user) {
+        throw new Error(
+          "Account created, but the authentication response is incomplete. Please try logging in."
+        );
+      }
+
+      // Update the shared authentication state.
+      login(result.user, result.accessToken);
+
       setSuccessMessage(
         result.message || "Account created successfully."
       );
+
+      // Navigate to the dashboard after successful registration.
+      navigate("/dashboard", { replace: true });
     } catch (error) {
       setServerError(
         error.response?.data?.message ||
+          error.message ||
           "Unable to create your account. Please try again."
       );
     }
