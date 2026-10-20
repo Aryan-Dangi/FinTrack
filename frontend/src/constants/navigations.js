@@ -1,3 +1,4 @@
+
 import {
   LayoutDashboard,
   ArrowLeftRight,
@@ -6,6 +7,7 @@ import {
   Trophy,
   BarChart3,
   Settings,
+  ArrowLeftRight as TransferIcon,
 } from "lucide-react";
 
 export const navigation = [
@@ -18,6 +20,11 @@ export const navigation = [
     title: "Transactions",
     path: "/transactions",
     icon: ArrowLeftRight,
+  },
+  {
+    title: "Transfers",
+    path: "/transfers",
+    icon: TransferIcon,
   },
   {
     title: "Accounts",

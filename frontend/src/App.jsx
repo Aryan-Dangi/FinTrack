@@ -14,6 +14,7 @@ import Budgets from './pages/Budgets/Budgets';
 import Goals from './pages/Goals/Goals';
 import Analytics from './pages/Analytics/Analytics';
 import Settings from './pages/Settings/Settings';
+import Transfers from "./pages/Transfers/Transfers";
 
 function App() {
   return (
@@ -34,6 +35,7 @@ function App() {
           <Route path="/goals" element={<Goals />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/transfers" element={<Transfers />} />
         </Route>
       </Route>
     </Routes>

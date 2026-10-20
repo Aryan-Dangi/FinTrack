@@ -1,4 +1,5 @@
 const User = require("../models/User");
+const jwt = require("jsonwebtoken");
 const signup = async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
@@ -185,6 +186,37 @@ const refreshAccessToken = async (req, res) => {
   }
 };
 
+const logout = async (req, res) => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (refreshToken) {
+      await User.findOneAndUpdate(
+        { refreshToken },
+        { $set: { refreshToken: "" } }
+      );
+    }
+
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Logged out successfully.",
+    });
+  } catch (error) {
+    console.error("Logout Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Logout failed.",
+    });
+  }
+};
+
 module.exports = {
-  signup,login,getMe,refreshAccessToken
+  signup,login,getMe,refreshAccessToken,logout
 };

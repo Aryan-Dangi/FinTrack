@@ -3,6 +3,10 @@ const express = require('express');
 const cors = require('cors');
 const authRoutes = require("./routes/authRoutes");
 const cookieParser = require("cookie-parser")
+const transactionRoutes = require("./routes/transactionRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
+const accountRoutes = require("./routes/accountRoutes");
+const transferRoutes = require("./routes/transferRoutes");
 const app = express();
 app.use(cors({
   origin: "http://localhost:5173",
@@ -11,6 +15,10 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser())
 app.use("/api/auth", authRoutes);
+app.use("/api/transactions", transactionRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/accounts", accountRoutes);
+app.use("/api/transfers", transferRoutes);
 app.get("/api/health",(req,res)=>{
   res.json({
     status: "OK",
