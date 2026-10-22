@@ -10,11 +10,27 @@ const transactionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Optional for backward compatibility with existing transactions.
+    // Optional: transactions need not be linked to an account.
     account: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Account",
       default: null,
+      index: true,
+    },
+
+    // Set only for transactions that contribute to a savings goal.
+    goal: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Goal",
+      default: null,
+      index: true,
+    },
+
+    transactionKind: {
+      type: String,
+      enum: ["standard", "goal_contribution"],
+      default: "standard",
+      required: true,
       index: true,
     },
 
@@ -72,5 +88,6 @@ const transactionSchema = new mongoose.Schema(
 
 transactionSchema.index({ user: 1, date: -1 });
 transactionSchema.index({ user: 1, account: 1, date: -1 });
+transactionSchema.index({ user: 1, goal: 1, date: -1 });
 
 module.exports = mongoose.model("Transaction", transactionSchema);

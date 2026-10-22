@@ -11,6 +11,7 @@ const categories = [
   "Education",
   "Salary",
   "Investment",
+  "Goal Contribution",
   "Other",
 ];
 
@@ -30,6 +31,7 @@ const emptyForm = () => ({
   date: new Date().toISOString().slice(0, 10),
   paymentMethod: "upi",
   account: "",
+  goal: "",
   note: "",
 });
 
@@ -61,6 +63,8 @@ const Transactions = () => {
   const [transactions, setTransactions] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [accountsError, setAccountsError] = useState("");
+  const [goals, setGoals] = useState([]);
+  const [goalsError, setGoalsError] = useState("");
 
   const [summary, setSummary] = useState({
     income: 0,
@@ -131,6 +135,37 @@ const Transactions = () => {
       cancelled = true;
     };
   }, []);
+
+  // Load active goals for the Goal Contribution category.
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchGoals = async () => {
+      try {
+        const response = await api.get("/goals");
+        const data = response.data;
+        const result = Array.isArray(data.goals)
+          ? data.goals
+          : Array.isArray(data)
+            ? data
+            : [];
+
+        if (!cancelled) {
+          setGoals(result.filter((goal) => goal.status === "active"));
+          setGoalsError("");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setGoalsError(
+            err.response?.data?.message || "Unable to load savings goals."
+          );
+        }
+      }
+    };
+
+    fetchGoals();
+    return () => { cancelled = true; };
+  }, [reloadKey]);
 
   // Debounce text search to avoid an API call for every keystroke.
   useEffect(() => {
@@ -250,6 +285,9 @@ const Transactions = () => {
       account: transaction.account
         ? String(transaction.account._id || transaction.account)
         : "",
+      goal: transaction.goal
+        ? String(transaction.goal._id || transaction.goal)
+        : "",
       note: transaction.note || "",
     });
 
@@ -268,10 +306,23 @@ const Transactions = () => {
   const updateForm = (event) => {
     const { name, value } = event.target;
 
-    setForm((current) => ({
-      ...current,
-      [name]: value,
-    }));
+    setForm((current) => {
+      if (name === "category") {
+        const isContribution = value === "Goal Contribution";
+        return {
+          ...current,
+          category: value,
+          type: isContribution ? "expense" : current.type,
+          goal: isContribution ? current.goal : "",
+        };
+      }
+
+      if (name === "type" && current.category === "Goal Contribution") {
+        return { ...current, type: "expense" };
+      }
+
+      return { ...current, [name]: value };
+    });
   };
 
   const handleSave = async (event) => {
@@ -288,13 +339,24 @@ const Transactions = () => {
       return;
     }
 
+    const isGoalContribution = form.category === "Goal Contribution";
+
+    if (isGoalContribution && !form.goal) {
+      setFormError("Select the savings goal for this contribution.");
+      return;
+    }
+
     setIsSaving(true);
 
     const payload = {
       ...form,
       title: form.title.trim(),
       amount: Number(form.amount),
+      type: isGoalContribution ? "expense" : form.type,
+      category: isGoalContribution ? "Goal Contribution" : form.category,
       account: form.account || null,
+      goal: isGoalContribution ? form.goal : null,
+      transactionKind: isGoalContribution ? "goal_contribution" : "standard",
       note: form.note.trim(),
     };
 
@@ -607,6 +669,12 @@ const Transactions = () => {
                             {transaction.title}
                           </div>
 
+                          {(transaction.transactionKind === "goal_contribution" || transaction.category === "Goal Contribution") && (
+                            <div className="mt-1 text-xs text-emerald-400">
+                              Goal: {transaction.goal?.name || goals.find((goal) => String(goal._id) === String(transaction.goal?._id || transaction.goal))?.name || "Savings goal"}
+                            </div>
+                          )}
+
                           {transaction.note && (
                             <div className="mt-1 max-w-52 truncate text-xs text-zinc-500">
                               {transaction.note}
@@ -821,9 +889,10 @@ const Transactions = () => {
 
                   <select
                     name="type"
-                    value={form.type}
+                    value={form.category === "Goal Contribution" ? "expense" : form.type}
                     onChange={updateForm}
-                    className={inputClass}
+                    disabled={form.category === "Goal Contribution"}
+                    className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}
                   >
                     <option value="expense">Expense</option>
                     <option value="income">Income</option>
@@ -866,6 +935,33 @@ const Transactions = () => {
                   />
                 </div>
               </div>
+
+              {form.category === "Goal Contribution" && (
+                <div>
+                  <label className="mb-1.5 block text-sm text-zinc-300">
+                    Savings goal <span className="text-rose-400">*</span>
+                  </label>
+                  <select
+                    name="goal"
+                    value={form.goal}
+                    onChange={updateForm}
+                    required
+                    className={inputClass}
+                  >
+                    <option value="">Select a savings goal</option>
+                    {goals.map((goal) => (
+                      <option key={goal._id} value={goal._id}>
+                        {goal.name} — {formatCurrency(goal.currentAmount)} / {formatCurrency(goal.targetAmount)}
+                      </option>
+                    ))}
+                  </select>
+                  {goalsError && <p className="mt-2 text-xs text-amber-400">{goalsError}</p>}
+                  {!goalsError && goals.length === 0 && (
+                    <p className="mt-2 text-xs text-zinc-500">Create an active savings goal first.</p>
+                  )}
+                  <p className="mt-2 text-xs text-zinc-500">The contribution is recorded in transaction history. An account is optional and will only be affected when you select one.</p>
+                </div>
+              )}
 
               {/* NEW: Link the transaction to an account */}
               <div>
