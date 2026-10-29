@@ -5,6 +5,7 @@ const GoalContribution = require("../models/GoalContribution");
 const Account = require("../models/Account");
 const Transaction = require("../models/Transaction");
 const Transfer = require("../models/Transfer");
+const { ApiError, GoalBalanceError } = require("../utils/ApiError");
 
 const getUserId = (req) => req.user?._id || req.user?.id;
 
@@ -112,13 +113,13 @@ const calculateAvailableBalance = async (account, userId) => {
   );
 };
 
-const updateGoalProgress = async (goal, delta) => {
+const updateGoalProgress = async (goal, delta, session) => {
   const initialAmount = Number(goal.initialAmount || 0);
   const currentAmount = Number(goal.currentAmount || 0);
   const nextAmount = currentAmount + delta;
 
   if (nextAmount < initialAmount - 0.000001) {
-    throw new Error(
+    throw new GoalBalanceError(
       "This change would reduce goal savings below its initial amount."
     );
   }
@@ -131,7 +132,33 @@ const updateGoalProgress = async (goal, delta) => {
     goal.status = "active";
   }
 
-  await goal.save();
+  await goal.save({ session });
+};
+
+let transactionSupportWarningLogged = false;
+
+const transactionsUnsupported = (error) =>
+  error?.code === 20 && error?.codeName === "IllegalOperation";
+
+const runInTransaction = async (work) => {
+  const session = await mongoose.startSession();
+
+  try {
+    return await session.withTransaction(() => work(session));
+  } catch (error) {
+    if (!transactionsUnsupported(error)) throw error;
+
+    if (!transactionSupportWarningLogged) {
+      console.warn(
+        "MongoDB transactions are unavailable; using standalone compatibility mode."
+      );
+      transactionSupportWarningLogged = true;
+    }
+
+    return work(undefined);
+  } finally {
+    await session.endSession();
+  }
 };
 
 // GET /api/goals/:id/contributions
@@ -212,9 +239,6 @@ const getContributions = async (req, res) => {
 // POST /api/goals/:id/contributions
 // New contributions are saved as Transaction records, not GoalContribution.
 const createContribution = async (req, res) => {
-  let createdTransaction = null;
-  let goalProgressChanged = false;
-
   try {
     const userId = getUserId(req);
     const { id } = req.params;
@@ -328,25 +352,59 @@ const createContribution = async (req, res) => {
       });
     }
 
-    createdTransaction = await Transaction.create({
-      user: userId,
-      title: `Contribution to ${goal.name}`,
-      amount,
-      type: "expense",
-      category: "Goal Contribution",
-      date: date ? new Date(date) : new Date(),
-      paymentMethod: "other",
-      note: note?.trim() || "",
-      account: account?._id || null,
-      goal: goal._id,
-      transactionKind: "goal_contribution",
-    });
+    const { transactionId, updatedGoal } = await runInTransaction(
+      async (session) => {
+        const transactionalGoal = await Goal.findOne(
+          { _id: id, user: userId },
+          null,
+          { session }
+        );
 
-    await updateGoalProgress(goal, amount);
-    goalProgressChanged = true;
+        if (!transactionalGoal) {
+          throw new ApiError("Goal not found.", 404);
+        }
+
+        if (transactionalGoal.status !== "active") {
+          throw new ApiError("Only active goals can receive contributions.");
+        }
+
+        if (
+          Number(transactionalGoal.currentAmount || 0) + amount >
+          Number.MAX_SAFE_INTEGER
+        ) {
+          throw new ApiError("Contribution amount is too large.");
+        }
+
+        const [transaction] = await Transaction.create(
+          [
+            {
+              user: userId,
+              title: `Contribution to ${transactionalGoal.name}`,
+              amount,
+              type: "expense",
+              category: "Goal Contribution",
+              date: date ? new Date(date) : new Date(),
+              paymentMethod: "other",
+              note: note?.trim() || "",
+              account: account?._id || null,
+              goal: transactionalGoal._id,
+              transactionKind: "goal_contribution",
+            },
+          ],
+          { session }
+        );
+
+        await updateGoalProgress(transactionalGoal, amount, session);
+
+        return {
+          transactionId: transaction._id,
+          updatedGoal: transactionalGoal,
+        };
+      }
+    );
 
     const populatedTransaction = await Transaction.findById(
-      createdTransaction._id
+      transactionId
     )
       .populate("account", "name type color currency")
       .populate("goal", "name");
@@ -357,26 +415,13 @@ const createContribution = async (req, res) => {
         ...populatedTransaction.toObject(),
         source: "transaction",
       },
-      goal,
+      goal: updatedGoal,
     });
   } catch (error) {
     console.error("Create goal contribution error:", error);
 
-    // Best-effort rollback if the goal update fails.
-    if (createdTransaction && !goalProgressChanged) {
-      await Transaction.deleteOne({
-        _id: createdTransaction._id,
-        user: getUserId(req),
-      }).catch((rollbackError) => {
-        console.error("Contribution rollback error:", rollbackError);
-      });
-    }
-
-    if (
-      error.name === "ValidationError" ||
-      error.message?.includes("goal savings")
-    ) {
-      return res.status(400).json({
+    if (error instanceof ApiError || error.name === "ValidationError") {
+      return res.status(error.status || 400).json({
         message: error.message,
       });
     }
@@ -409,92 +454,69 @@ const deleteContribution = async (req, res) => {
       });
     }
 
-    const goal = await Goal.findOne({
-      _id: id,
-      user: userId,
-    });
+    const result = await runInTransaction(async (session) => {
+      const goal = await Goal.findOne(
+        { _id: id, user: userId },
+        null,
+        { session }
+      );
 
-    if (!goal) {
-      return res.status(404).json({
-        message: "Goal not found.",
-      });
-    }
+      if (!goal) throw new ApiError("Goal not found.", 404);
 
-    // First check the new Transaction-based source of truth.
-    const transaction = await Transaction.findOne({
-      _id: contributionId,
-      user: userId,
-      goal: id,
-      transactionKind: "goal_contribution",
-    });
-
-    if (transaction) {
-      const originalAmount = Number(goal.currentAmount || 0);
-      const originalStatus = goal.status;
-
-      await updateGoalProgress(goal, -Number(transaction.amount));
-
-      try {
-        await Transaction.deleteOne({
-          _id: transaction._id,
+      // First check the new Transaction-based source of truth.
+      const transaction = await Transaction.findOne(
+        {
+          _id: contributionId,
           user: userId,
-        });
-      } catch (error) {
-        // Restore progress if deletion fails.
-        goal.currentAmount = originalAmount;
-        goal.status = originalStatus;
-        await goal.save();
-        throw error;
+          goal: id,
+          transactionKind: "goal_contribution",
+        },
+        null,
+        { session }
+      );
+
+      if (transaction) {
+        await updateGoalProgress(goal, -Number(transaction.amount), session);
+        await Transaction.deleteOne(
+          { _id: transaction._id, user: userId },
+          { session }
+        );
+
+        return { message: "Contribution deleted successfully.", goal };
       }
 
-      return res.status(200).json({
-        message: "Contribution deleted successfully.",
-        contributionId,
-        goal,
-      });
-    }
+      const legacyContribution = await GoalContribution.findOne(
+        { _id: contributionId, goal: id, user: userId },
+        null,
+        { session }
+      );
 
-    // Backward compatibility for old GoalContribution records.
-    const legacyContribution = await GoalContribution.findOne({
-      _id: contributionId,
-      goal: id,
-      user: userId,
+      if (!legacyContribution) {
+        throw new ApiError("Contribution not found.", 404);
+      }
+
+      await updateGoalProgress(goal, -Number(legacyContribution.amount), session);
+      await GoalContribution.deleteOne(
+        { _id: legacyContribution._id, user: userId },
+        { session }
+      );
+
+      return { message: "Legacy contribution deleted successfully.", goal };
     });
 
-    if (!legacyContribution) {
-      return res.status(404).json({
-        message: "Contribution not found.",
-      });
-    }
-
-    const originalAmount = Number(goal.currentAmount || 0);
-    const originalStatus = goal.status;
-
-    await updateGoalProgress(goal, -Number(legacyContribution.amount));
-
-    try {
-      await GoalContribution.deleteOne({
-        _id: legacyContribution._id,
-        user: userId,
-      });
-    } catch (error) {
-      goal.currentAmount = originalAmount;
-      goal.status = originalStatus;
-      await goal.save();
-      throw error;
-    }
-
     return res.status(200).json({
-      message: "Legacy contribution deleted successfully.",
+      message: result.message,
       contributionId,
-      goal,
+      goal: result.goal,
     });
   } catch (error) {
     console.error("Delete goal contribution error:", error);
 
-    return res.status(500).json({
-      message: error.message || "Unable to delete contribution.",
-    });
+    if (error instanceof ApiError || error.name === "ValidationError") {
+      return res.status(error.status || 400).json({ message: error.message });
+    }
+
+    return res.status(500).json({ message: "Unable to delete contribution." });
   }
 };
 

@@ -36,6 +36,7 @@ function App() {
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/transfers" element={<Transfers />} />
+          <Route path="/analytics" element={<Analytics />} />
         </Route>
       </Route>
     </Routes>

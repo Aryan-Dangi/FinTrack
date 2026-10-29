@@ -9,7 +9,12 @@ const Navbar = ({
 }) => {
   const { user } = useAuth();
 
-  const userName = user?.fullName || "User";
+  const userName =
+  user?.fullName?.trim() ||
+  user?.name?.trim() ||
+  user?.username?.trim() ||
+  user?.email?.split("@")[0] ||
+  "User";
 
   return (
     <header className="flex h-16 items-center justify-between border-b border-zinc-800 bg-zinc-950 px-4 md:px-6">

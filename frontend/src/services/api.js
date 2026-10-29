@@ -1,3 +1,4 @@
+
 import axios from "axios";
 
 const api = axios.create({
@@ -15,12 +16,31 @@ export const setApiAccessToken = (token) => {
   currentAccessToken = token || null;
 };
 
+const getStoredAccessToken = () => {
+  const keys = ["accessToken", "access_token", "token"];
+
+  for (const key of keys) {
+    const value = localStorage.getItem(key);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
 api.interceptors.request.use(
   (config) => {
     // Preserve an explicitly supplied Authorization header.
-    // Otherwise, attach the current in-memory access token.
-    if (!config.headers.Authorization && currentAccessToken) {
-      config.headers.Authorization = `Bearer ${currentAccessToken}`;
+    if (config.headers.Authorization) {
+      return config;
+    }
+
+    const token = currentAccessToken || getStoredAccessToken();
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
     }
 
     return config;

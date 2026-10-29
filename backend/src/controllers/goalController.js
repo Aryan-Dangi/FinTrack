@@ -7,6 +7,32 @@ const GoalContribution = require("../models/GoalContribution");
 
 const getUserId = (req) => req.user?._id || req.user?.id;
 
+let transactionSupportWarningLogged = false;
+
+const transactionsUnsupported = (error) =>
+  error?.code === 20 && error?.codeName === "IllegalOperation";
+
+const runInTransaction = async (work) => {
+  const session = await mongoose.startSession();
+
+  try {
+    return await session.withTransaction(() => work(session));
+  } catch (error) {
+    if (!transactionsUnsupported(error)) throw error;
+
+    if (!transactionSupportWarningLogged) {
+      console.warn(
+        "MongoDB transactions are unavailable; using standalone compatibility mode."
+      );
+      transactionSupportWarningLogged = true;
+    }
+
+    return work(undefined);
+  } finally {
+    await session.endSession();
+  }
+};
+
 const allowedCategories = [
   "Emergency Fund",
   "Travel",
@@ -186,9 +212,6 @@ const getGoals = async (req, res) => {
 
 // POST /api/goals
 const createGoal = async (req, res) => {
-  let createdGoalId = null;
-  let createdTransactionId = null;
-
   try {
     const userId = getUserId(req);
 
@@ -251,50 +274,59 @@ const createGoal = async (req, res) => {
     // Without an account, it is treated as pre-existing savings.
     const baselineAmount = account ? 0 : initialAmount;
 
-    const goal = await Goal.create({
-      user: userId,
-      name: req.body.name.trim(),
-      targetAmount,
-      initialAmount: baselineAmount,
-      currentAmount: baselineAmount,
-      category: req.body.category || "Other",
-      targetDate: req.body.targetDate || null,
-      note: req.body.note || "",
-      status: getGoalStatus(
-        baselineAmount,
-        targetAmount,
-        req.body.status
-      ),
-    });
-
-    createdGoalId = goal._id;
-
-    if (account && initialAmount > 0) {
-      const transaction = await Transaction.create({
-        user: userId,
-        account: account._id,
-        goal: goal._id,
-        transactionKind: "goal_contribution",
-        title: `Initial contribution: ${goal.name}`.slice(0, 100),
-        amount: initialAmount,
-        type: "expense",
-        category: "Goal Contribution",
-        date: new Date(),
-        paymentMethod: "other",
-        note: "Initial goal contribution",
-      });
-
-      createdTransactionId = transaction._id;
-
-      goal.currentAmount = initialAmount;
-      goal.status = getGoalStatus(
-        goal.currentAmount,
-        goal.targetAmount,
-        req.body.status
+    const goal = await runInTransaction(async (session) => {
+      const [createdGoal] = await Goal.create(
+        [
+          {
+            user: userId,
+            name: req.body.name.trim(),
+            targetAmount,
+            initialAmount: baselineAmount,
+            currentAmount: baselineAmount,
+            category: req.body.category || "Other",
+            targetDate: req.body.targetDate || null,
+            note: req.body.note || "",
+            status: getGoalStatus(
+              baselineAmount,
+              targetAmount,
+              req.body.status
+            ),
+          },
+        ],
+        { session }
       );
 
-      await goal.save();
-    }
+      if (account && initialAmount > 0) {
+        await Transaction.create(
+          [
+            {
+              user: userId,
+              account: account._id,
+              goal: createdGoal._id,
+              transactionKind: "goal_contribution",
+              title: `Initial contribution: ${createdGoal.name}`.slice(0, 100),
+              amount: initialAmount,
+              type: "expense",
+              category: "Goal Contribution",
+              date: new Date(),
+              paymentMethod: "other",
+              note: "Initial goal contribution",
+            },
+          ],
+          { session }
+        );
+
+        createdGoal.currentAmount = initialAmount;
+        createdGoal.status = getGoalStatus(
+          createdGoal.currentAmount,
+          createdGoal.targetAmount,
+          req.body.status
+        );
+        await createdGoal.save({ session });
+      }
+
+      return createdGoal;
+    });
 
     return res.status(201).json({
       message: "Goal created successfully.",
@@ -302,22 +334,6 @@ const createGoal = async (req, res) => {
     });
   } catch (error) {
     console.error("Create goal error:", error);
-
-    if (createdTransactionId) {
-      await Transaction.deleteOne({
-        _id: createdTransactionId,
-      }).catch((cleanupError) =>
-        console.error("Contribution cleanup error:", cleanupError)
-      );
-    }
-
-    if (createdGoalId) {
-      await Goal.deleteOne({
-        _id: createdGoalId,
-      }).catch((cleanupError) =>
-        console.error("Goal cleanup error:", cleanupError)
-      );
-    }
 
     if (error.name === "ValidationError") {
       return res.status(400).json({
@@ -451,64 +467,60 @@ const deleteGoal = async (req, res) => {
       });
     }
 
-    // Find modern contribution transactions, including older records
-    // that may have category set but no transactionKind.
-    const contributions = await Transaction.find({
-      user: userId,
-      goal: goal._id,
-      $or: [
-        { transactionKind: "goal_contribution" },
-        { category: "Goal Contribution" },
-      ],
-    }).select("_id");
-
-    const contributionIds = contributions.map(
-      (transaction) => transaction._id
-    );
-
-    // Detach the account reference from modern contributions.
-    // The transaction history stays, but the account balance calculation
-    // no longer deducts these transactions.
-    if (contributionIds.length > 0) {
-      await Transaction.updateMany(
+    const deletion = await runInTransaction(async (session) => {
+      // Find modern contribution transactions, including older records
+      // that may have category set but no transactionKind.
+      const contributions = await Transaction.find(
         {
-          _id: { $in: contributionIds },
           user: userId,
+          goal: goal._id,
+          $or: [
+            { transactionKind: "goal_contribution" },
+            { category: "Goal Contribution" },
+          ],
         },
-        {
-          $set: {
-            account: null,
-            goal: null,
-          },
-        }
+        null,
+        { session }
+      ).select("_id");
+
+      const contributionIds = contributions.map(
+        (transaction) => transaction._id
       );
-    }
 
-    // Legacy contributions are separately included in account balance
-    // calculations. Remove them so they no longer deduct from accounts.
-    // Modern transactions are retained in transaction history.
-    const legacyResult = await GoalContribution.deleteMany({
-      user: userId,
-      goal: goal._id,
+      if (contributionIds.length > 0) {
+        await Transaction.updateMany(
+          { _id: { $in: contributionIds }, user: userId },
+          { $set: { account: null, goal: null } },
+          { session }
+        );
+      }
+
+      const legacyResult = await GoalContribution.deleteMany(
+        { user: userId, goal: goal._id },
+        { session }
+      );
+
+      const result = await Goal.deleteOne(
+        { _id: goal._id, user: userId },
+        { session }
+      );
+
+      if (result.deletedCount !== 1) {
+        throw new Error("The goal could not be deleted.");
+      }
+
+      return {
+        contributionCount: contributionIds.length,
+        legacyContributionCount: legacyResult.deletedCount,
+      };
     });
-
-    const result = await Goal.deleteOne({
-      _id: goal._id,
-      user: userId,
-    });
-
-    if (result.deletedCount !== 1) {
-      return res.status(409).json({
-        message: "The goal could not be deleted. Please try again.",
-      });
-    }
 
     return res.status(200).json({
       message:
         "Goal deleted successfully. Linked account balance deductions have been removed.",
       goalId: String(goal._id),
-      preservedTransactions: contributionIds.length,
-      removedLegacyContributions: legacyResult.deletedCount,
+      preservedTransactions: deletion.contributionCount,
+      removedLegacyContributions: deletion.legacyContributionCount,
     });
   } catch (error) {
     console.error("Delete goal error:", error);

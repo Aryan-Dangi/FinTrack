@@ -21,6 +21,10 @@ const goalSchema = new mongoose.Schema(
       type: Number,
       required: true,
       min: 0.01,
+      validate: {
+        validator: Number.isFinite,
+        message: "Target amount must be a finite number.",
+      },
     },
 
     // Savings that existed before contribution tracking.
@@ -28,6 +32,10 @@ const goalSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+      validate: {
+        validator: Number.isFinite,
+        message: "Initial amount must be a finite number.",
+      },
     },
 
     // Maintained as the total saved for compatibility.
@@ -35,6 +43,18 @@ const goalSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+      validate: [
+        {
+          validator: Number.isFinite,
+          message: "Current amount must be a finite number.",
+        },
+        {
+          validator(value) {
+            return value >= Number(this.initialAmount || 0);
+          },
+          message: "Current amount cannot be less than the initial amount.",
+        },
+      ],
     },
 
     category: {
@@ -72,6 +92,17 @@ const goalSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// A non-cancelled goal's status is derived from its saved progress. Keeping
+// this invariant in the schema also protects writes that bypass controllers.
+goalSchema.pre("validate", function syncGoalStatus() {
+  if (this.status !== "cancelled") {
+    this.status =
+      Number(this.currentAmount) >= Number(this.targetAmount)
+        ? "completed"
+        : "active";
+  }
+});
 
 goalSchema.index({ user: 1, status: 1, targetDate: 1 });
 

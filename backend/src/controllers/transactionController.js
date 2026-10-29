@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const Transaction = require("../models/Transaction");
 const Account = require("../models/Account");
 const Goal = require("../models/Goal");
+const { ApiError, GoalBalanceError } = require("../utils/ApiError");
 
 const getUserId = (req) => req.user?._id || req.user?.id;
 
@@ -162,7 +163,7 @@ const validateData = (
   return errors;
 };
 
-const validateAccountOwnership = async (accountId, userId) => {
+const validateAccountOwnership = async (accountId, userId, session) => {
   if (accountId === null || accountId === undefined || accountId === "") {
     return true;
   }
@@ -171,24 +172,32 @@ const validateAccountOwnership = async (accountId, userId) => {
     return false;
   }
 
-  const account = await Account.findOne({
-    _id: accountId,
-    user: userId,
-    isArchived: false,
-  }).select("_id");
+  const account = await Account.findOne(
+    {
+      _id: accountId,
+      user: userId,
+      isArchived: false,
+    },
+    null,
+    { session }
+  ).select("_id");
 
   return Boolean(account);
 };
 
-const findOwnedGoal = async (goalId, userId) => {
+const findOwnedGoal = async (goalId, userId, session) => {
   if (!goalId || !mongoose.isValidObjectId(goalId)) {
     return null;
   }
 
-  return Goal.findOne({
-    _id: goalId,
-    user: userId,
-  });
+  return Goal.findOne(
+    {
+      _id: goalId,
+      user: userId,
+    },
+    null,
+    { session }
+  );
 };
 
 const resolveKind = (data, existing = null) => {
@@ -212,7 +221,8 @@ const prepareContribution = async (
   data,
   userId,
   kind,
-  existing = null
+  existing = null,
+  session
 ) => {
   if (kind !== "goal_contribution") {
     data.transactionKind = "standard";
@@ -229,7 +239,7 @@ const prepareContribution = async (
       ? data.goal
       : existing?.goal;
 
-  const goal = await findOwnedGoal(goalId, userId);
+  const goal = await findOwnedGoal(goalId, userId, session);
 
   if (!goal) {
     return {
@@ -284,18 +294,22 @@ const prepareContribution = async (
  * initialAmount is the baseline that tracked contributions
  * must not reduce below.
  */
-const applyGoalDelta = async (goalId, userId, delta) => {
+const applyGoalDelta = async (goalId, userId, delta, session) => {
   if (!goalId || Math.abs(delta) < 0.000001) {
     return;
   }
 
-  const goal = await Goal.findOne({
-    _id: goalId,
-    user: userId,
-  });
+  const goal = await Goal.findOne(
+    {
+      _id: goalId,
+      user: userId,
+    },
+    null,
+    { session }
+  );
 
   if (!goal) {
-    throw new Error("The linked savings goal no longer exists.");
+    throw new ApiError("The linked savings goal no longer exists.", 409);
   }
 
   const currentAmount = Number(goal.currentAmount || 0);
@@ -303,7 +317,7 @@ const applyGoalDelta = async (goalId, userId, delta) => {
   const nextAmount = currentAmount + delta;
 
   if (nextAmount < initialAmount - 0.000001) {
-    throw new Error(
+    throw new GoalBalanceError(
       "This change would reduce goal savings below its initial amount."
     );
   }
@@ -317,7 +331,35 @@ const applyGoalDelta = async (goalId, userId, delta) => {
         : "active";
   }
 
-  await goal.save();
+  await goal.save({ session });
+};
+
+let transactionSupportWarningLogged = false;
+
+const transactionsUnsupported = (error) =>
+  error?.code === 20 && error?.codeName === "IllegalOperation";
+
+const runInTransaction = async (work) => {
+  const session = await mongoose.startSession();
+
+  try {
+    return await session.withTransaction(() => work(session));
+  } catch (error) {
+    // Local standalone MongoDB instances do not support transactions. Keep
+    // development usable while production replica sets retain atomic writes.
+    if (!transactionsUnsupported(error)) throw error;
+
+    if (!transactionSupportWarningLogged) {
+      console.warn(
+        "MongoDB transactions are unavailable; using standalone compatibility mode."
+      );
+      transactionSupportWarningLogged = true;
+    }
+
+    return work(undefined);
+  } finally {
+    await session.endSession();
+  }
 };
 
 const populateTransaction = (query) =>
@@ -336,18 +378,6 @@ const createTransaction = async (req, res) => {
     const data = normalizeData(getAllowedFields(req.body));
     const kind = resolveKind(data);
 
-    const prepared = await prepareContribution(
-      data,
-      userId,
-      kind
-    );
-
-    if (!prepared.ok) {
-      return res.status(400).json({
-        message: prepared.message,
-      });
-    }
-
     if (data.date === undefined) {
       data.date = new Date();
     }
@@ -360,52 +390,55 @@ const createTransaction = async (req, res) => {
       data.note = "";
     }
 
-    const errors = validateData(data, {
-      contribution: prepared.contribution,
-    });
-
-    if (errors.length) {
-      return res.status(400).json({
-        message: errors[0],
-        errors,
-      });
-    }
-
-    const validAccount = await validateAccountOwnership(
-      data.account,
-      userId
-    );
-
-    if (!validAccount) {
-      return res.status(400).json({
-        message: "Account not found, archived, or not owned by you.",
-      });
-    }
-
     data.user = userId;
+    const transactionId = await runInTransaction(async (session) => {
+      const prepared = await prepareContribution(
+        data,
+        userId,
+        kind,
+        null,
+        session
+      );
 
-    const transaction = await Transaction.create(data);
+      if (!prepared.ok) {
+        throw new ApiError(prepared.message);
+      }
 
-    try {
+      const errors = validateData(data, {
+        contribution: prepared.contribution,
+      });
+
+      if (errors.length) {
+        throw new ApiError(errors[0]);
+      }
+
+      const validAccount = await validateAccountOwnership(
+        data.account,
+        userId,
+        session
+      );
+
+      if (!validAccount) {
+        throw new ApiError("Account not found, archived, or not owned by you.");
+      }
+
+      const [transaction] = await Transaction.create([data], { session });
+
       if (isContribution(transaction)) {
         await applyGoalDelta(
           transaction.goal,
           userId,
-          Number(transaction.amount)
+          Number(transaction.amount),
+          session
         );
       }
-    } catch (error) {
-      await Transaction.deleteOne({
-        _id: transaction._id,
-        user: userId,
-      });
 
-      throw error;
-    }
+      return transaction._id;
+    });
 
     const result = await populateTransaction(
       Transaction.findOne({
-        _id: transaction._id,
+        _id: transactionId,
         user: userId,
       })
     ).lean();
@@ -418,10 +451,9 @@ const createTransaction = async (req, res) => {
     console.error("Create transaction error:", error);
 
     if (
-      error.name === "ValidationError" ||
-      /goal|savings/i.test(error.message || "")
+      error instanceof ApiError || error.name === "ValidationError"
     ) {
-      return res.status(400).json({
+      return res.status(error.status || 400).json({
         message: error.message,
       });
     }
@@ -637,8 +669,6 @@ const getTransactions = async (req, res) => {
 
 const updateTransaction = async (req, res) => {
   let existing = null;
-  let transactionUpdated = false;
-  const appliedDeltas = [];
 
   try {
     const userId = getUserId(req);
@@ -769,60 +799,44 @@ const updateTransaction = async (req, res) => {
     const oldAmount = Number(existing.amount);
     const newAmount = Number(finalData.amount);
 
-    const updated = await Transaction.findOneAndUpdate(
-      { _id: id, user: userId },
-      { $set: updates },
-      { new: true, runValidators: true }
-    );
+    const updated = await runInTransaction(async (session) => {
+      // The version check prevents a stale request from applying a goal delta
+      // calculated from an older transaction value.
+      const updated = await Transaction.findOneAndUpdate(
+        { _id: id, user: userId, updatedAt: existing.updatedAt },
+        { $set: updates },
+        { new: true, runValidators: true, session }
+      );
 
-    if (!updated) {
-      return res.status(404).json({
-        message: "Transaction not found.",
-      });
-    }
-
-    transactionUpdated = true;
-
-    if (
-      oldContribution &&
-      newContribution &&
-      oldGoalId === newGoalId
-    ) {
-      // Same goal: apply only the amount difference.
-      const delta = newAmount - oldAmount;
-
-      if (Math.abs(delta) > 0.000001) {
-        await applyGoalDelta(existing.goal, userId, delta);
-
-        appliedDeltas.push({
-          goalId: existing.goal,
-          delta,
-        });
-      }
-    } else {
-      // Reverse the old contribution before applying the new one.
-      if (oldContribution) {
-        const delta = -oldAmount;
-
-        await applyGoalDelta(existing.goal, userId, delta);
-
-        appliedDeltas.push({
-          goalId: existing.goal,
-          delta,
-        });
+      if (!updated) {
+        throw new ApiError(
+          "Transaction was changed by another request. Please refresh and try again.",
+          409
+        );
       }
 
-      if (newContribution) {
-        const delta = newAmount;
+      if (
+        oldContribution &&
+        newContribution &&
+        oldGoalId === newGoalId
+      ) {
+        const delta = newAmount - oldAmount;
 
-        await applyGoalDelta(updated.goal, userId, delta);
+        if (Math.abs(delta) > 0.000001) {
+          await applyGoalDelta(existing.goal, userId, delta, session);
+        }
+      } else {
+        if (oldContribution) {
+          await applyGoalDelta(existing.goal, userId, -oldAmount, session);
+        }
 
-        appliedDeltas.push({
-          goalId: updated.goal,
-          delta,
-        });
+        if (newContribution) {
+          await applyGoalDelta(updated.goal, userId, newAmount, session);
+        }
       }
-    }
+
+      return updated;
+    });
 
     const result = await populateTransaction(
       Transaction.findOne({
@@ -838,49 +852,8 @@ const updateTransaction = async (req, res) => {
   } catch (error) {
     console.error("Update transaction error:", error);
 
-    // Best-effort rollback if a goal update failed after the transaction
-    // document was updated.
-    try {
-      if (transactionUpdated && existing) {
-        await Transaction.updateOne(
-          {
-            _id: existing._id,
-            user: getUserId(req),
-          },
-          {
-            $set: {
-              title: existing.title,
-              amount: existing.amount,
-              type: existing.type,
-              category: existing.category,
-              date: existing.date,
-              paymentMethod: existing.paymentMethod,
-              note: existing.note,
-              account: existing.account ?? null,
-              goal: existing.goal ?? null,
-              transactionKind:
-                existing.transactionKind || "standard",
-            },
-          }
-        );
-      }
-
-      for (const applied of [...appliedDeltas].reverse()) {
-        await applyGoalDelta(
-          applied.goalId,
-          getUserId(req),
-          -applied.delta
-        );
-      }
-    } catch (rollbackError) {
-      console.error("Transaction rollback error:", rollbackError);
-    }
-
-    if (
-      error.name === "ValidationError" ||
-      /goal|savings/i.test(error.message || "")
-    ) {
-      return res.status(400).json({
+    if (error instanceof ApiError || error.name === "ValidationError") {
+      return res.status(error.status || 400).json({
         message: error.message,
       });
     }
@@ -908,41 +881,31 @@ const deleteTransaction = async (req, res) => {
       });
     }
 
-    const transaction = await Transaction.findOne({
-      _id: id,
-      user: userId,
-    });
+    await runInTransaction(async (session) => {
+      const transaction = await Transaction.findOne(
+        { _id: id, user: userId },
+        null,
+        { session }
+      );
 
-    if (!transaction) {
-      return res.status(404).json({
-        message: "Transaction not found.",
-      });
-    }
+      if (!transaction) {
+        throw new ApiError("Transaction not found.", 404);
+      }
 
-    const deleted = await Transaction.findOneAndDelete({
-      _id: id,
-      user: userId,
-    });
-
-    if (!deleted) {
-      return res.status(404).json({
-        message: "Transaction not found.",
-      });
-    }
-
-    try {
       if (isContribution(transaction)) {
         await applyGoalDelta(
           transaction.goal,
           userId,
-          -Number(transaction.amount)
+          -Number(transaction.amount),
+          session
         );
       }
-    } catch (error) {
-      // Restore the record if reversing goal progress fails.
-      await Transaction.create(transaction.toObject());
-      throw error;
-    }
+
+      await Transaction.deleteOne(
+        { _id: transaction._id, user: userId },
+        { session }
+      );
+    });
 
     return res.status(200).json({
       message: "Transaction deleted successfully.",
@@ -950,8 +913,8 @@ const deleteTransaction = async (req, res) => {
   } catch (error) {
     console.error("Delete transaction error:", error);
 
-    if (/goal|savings/i.test(error.message || "")) {
-      return res.status(400).json({
+    if (error instanceof ApiError || error.name === "ValidationError") {
+      return res.status(error.status || 400).json({
         message: error.message,
       });
     }
