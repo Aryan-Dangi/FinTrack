@@ -29,3 +29,13 @@ export const logoutUser = async () => {
   const response = await api.post("/auth/logout");
   return response.data;
 };
+
+export const updateUserProfile = async (profileData) => {
+  const response = await api.patch("/auth/profile", profileData);
+  return response.data;
+};
+
+export const changeUserPassword = async (passwordData) => {
+  const response = await api.patch("/auth/change-password", passwordData);
+  return response.data;
+};

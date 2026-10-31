@@ -5,7 +5,10 @@ import {
   refreshAccessToken,
   logoutUser as logoutApi,
 } from "../services/authService";
-import { setApiAccessToken } from "../services/api";
+import {
+  setApiAccessToken,
+  setAuthCallbacks,
+} from "../services/api";
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -13,7 +16,6 @@ export const AuthProvider = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Keep React state and the Axios request token synchronized.
   const login = useCallback((userData, token) => {
     if (!userData || !token) {
       throw new Error("User data and access token are required.");
@@ -23,6 +25,14 @@ export const AuthProvider = ({ children }) => {
     setUser(userData);
     setAccessToken(token);
     setIsAuthenticated(true);
+    setIsLoading(false);
+  }, []);
+
+  const clearAuthState = useCallback(() => {
+    setApiAccessToken(null);
+    setUser(null);
+    setAccessToken(null);
+    setIsAuthenticated(false);
   }, []);
 
   const logout = useCallback(async () => {
@@ -31,14 +41,27 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error("Logout request failed:", error);
     } finally {
-      // Always clear local authentication, even if the server is unavailable.
-      setApiAccessToken(null);
-      setUser(null);
-      setAccessToken(null);
-      setIsAuthenticated(false);
+      clearAuthState();
     }
-  }, []);
+  }, [clearAuthState]);
 
+  // Keep Axios token refreshes synchronized with React state.
+  useEffect(() => {
+    setAuthCallbacks({
+      onTokenRefreshed: (newToken) => {
+        setAccessToken(newToken);
+      },
+      onAuthExpired: () => {
+        clearAuthState();
+      },
+    });
+
+    return () => {
+      setAuthCallbacks({});
+    };
+  }, [clearAuthState]);
+
+  // Restore the user's session when the application loads.
   useEffect(() => {
     let cancelled = false;
 
@@ -51,6 +74,9 @@ export const AuthProvider = ({ children }) => {
           throw new Error("No access token returned.");
         }
 
+        // Set token before requesting the user profile.
+        setApiAccessToken(token);
+
         const userResult = await getCurrentUser(token);
         const restoredUser = userResult?.user;
 
@@ -59,17 +85,13 @@ export const AuthProvider = ({ children }) => {
         }
 
         if (!cancelled) {
-          setApiAccessToken(token);
           setAccessToken(token);
           setUser(restoredUser);
           setIsAuthenticated(true);
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setApiAccessToken(null);
-          setAccessToken(null);
-          setUser(null);
-          setIsAuthenticated(false);
+          clearAuthState();
         }
       } finally {
         if (!cancelled) {
@@ -83,7 +105,7 @@ export const AuthProvider = ({ children }) => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [clearAuthState]);
 
   const value = {
     user,

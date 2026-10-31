@@ -217,6 +217,116 @@ const logout = async (req, res) => {
   }
 };
 
+const updateProfile = async (req, res) => {
+  try {
+    const { fullName, currency } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    if (fullName !== undefined) {
+      if (typeof fullName !== "string" || fullName.trim().length < 3 || fullName.trim().length > 50) {
+        return res.status(400).json({
+          success: false,
+          message: "Full name must be between 3 and 50 characters.",
+        });
+      }
+
+      user.fullName = fullName.trim();
+    }
+
+    if (currency !== undefined) {
+      if (!["INR", "USD", "EUR", "GBP"].includes(currency)) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported currency.",
+        });
+      }
+
+      user.currency = currency;
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated successfully.",
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        currency: user.currency,
+        monthlyBudget: user.monthlyBudget,
+        avatar: user.avatar,
+        isEmailVerified: user.isEmailVerified,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Update Profile Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update profile.",
+    });
+  }
+};
+
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (
+      typeof currentPassword !== "string" ||
+      typeof newPassword !== "string" ||
+      newPassword.length < 8
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide your current password and a new password of at least 8 characters.",
+      });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    const isCurrentPasswordValid = await user.comparePassword(currentPassword);
+
+    if (!isCurrentPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password is incorrect.",
+      });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password changed successfully.",
+    });
+  } catch (error) {
+    console.error("Change Password Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to change password.",
+    });
+  }
+};
+
 module.exports = {
-  signup,login,getMe,refreshAccessToken,logout
+  signup,login,getMe,refreshAccessToken,logout,changePassword,updateProfile
 };
